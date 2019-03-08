@@ -225,12 +225,11 @@ int_insert_at_idx(PMEMobjpool *pop, TOID(struct colony) c, size_t colony_idx,
 	printf("el: %d", element);
 	/* sets the pointer to the table in which is a free element */
 	TOID(struct block) block_with_free = block_get_by_idx(c, colony_idx);
-	TOID(int) table;
-	TOID_ASSIGN(table, D_RW(block_with_free)->table);
 
 	size_t block_idx = colony_idx % D_RO(c)->block_capacity;
-
-	D_RW(table)[block_idx] = element;
+	TOID(int) tmp;
+	TOID_ASSIGN(tmp, D_RW(block_with_free)->table);
+	D_RW(tmp)[block_idx] = element;
 	D_RW(block_with_free)->block_size++;
 }
 
@@ -275,12 +274,10 @@ static void
 table_int_create(PMEMobjpool *pop, TOID(struct colony) c, TOID(struct block) b)
 {
 	size_t s = sizeof(int) * (D_RO(c)->block_capacity);
-	TOID(int) table;
-	TOID_ASSIGN(table, D_RW(b)->table);
 
 	TX_BEGIN(pop) {
 		TX_ADD_FIELD(b, table);
-		table = TX_ALLOC(int, s);
+		D_RW(b)->table = pmemobj_tx_alloc(s, TOID_TYPE_NUM(int));
 	} TX_ONABORT {
 		fprintf(stderr, "%s: transaction aborted: %s\n", __func__,
 			pmemobj_errormsg());
@@ -349,21 +346,21 @@ table_pmemoid_delete(PMEMobjpool *pop, PMEMoid table_del)
  * block_init_int -- allocates a block, creates a table, assigns values
  */
 static void
-block_init(PMEMobjpool *pop, TOID(struct colony) c, TOID(struct block) b)
+block_init(PMEMobjpool *pop, TOID(struct colony) c, TOID(struct block) * b)
 {
 	assert(pmemobj_tx_stage() == TX_STAGE_WORK);
-	POBJ_NEW(pop, &b, struct block, NULL, NULL);
+	*b = TX_ZNEW(struct block);
 
 	if (D_RW(c)->element_type == INT_ARRAY_TYPE)
-		table_int_create(pop, c, b);
+		table_int_create(pop, c, *b);
 	else if (D_RO(c)->element_type == PMEMOID_ARRAY_TYPE)
-		table_pmemoid_create(pop, c, b);
+		table_pmemoid_create(pop, c, *b);
 
-	D_RW(b)->block_size = 0;
-	D_RW(b)->idx_last = -1;
-	D_RW(b)->free_elem = 0;
+	D_RW(*b)->block_size = 0;
+	D_RW(*b)->idx_last = -1;
+	D_RW(*b)->free_elem = 0;
 
-	D_RW(b)->block_nr = D_RO(c)->block_count;
+	D_RW(*b)->block_nr = D_RO(c)->block_count;
 }
 
 
@@ -378,15 +375,14 @@ block_constructor(PMEMobjpool *pop, TOID(struct colony) c)
 	/* if it is a first block */
 	if (TOID_IS_NULL(D_RO(c)->block_head)) {
 
-		block_init(pop, c, D_RW(c)->block_tail);
+		block_init(pop, c, &D_RW(c)->block_tail);
 
-		//D_RW(D_RW(c)->block_tail)->prev = TOID_NULL(struct block);
-		//D_RW(D_RW(c)->block_tail)->next = TOID_NULL(struct block);
-		//D_RW(D_RW(c)->block_head)->prev = TOID_NULL(struct block);
-		//D_RW(D_RW(c)->block_head)->next = TOID_NULL(struct block);
-		D_RW(c)->block_head = D_RW(c)->block_tail;
+		D_RW(D_RW(c)->block_tail)->prev = TOID_NULL(struct block);
+		D_RW(D_RW(c)->block_tail)->next = TOID_NULL(struct block);
+		D_RW(c)->block_head = D_RW(c)->block_tail;		
 	} else {
-		block_init(pop, c, D_RW(D_RW(c)->block_tail)->next);
+		assert(TOID_IS_NULL(D_RW(D_RW(c)->block_tail)->next));
+		block_init(pop, c, &D_RW(D_RW(c)->block_tail)->next);
 
 		D_RW(D_RW(D_RW(c)->block_tail)->next)->prev = D_RO(c)->
 								block_tail;
